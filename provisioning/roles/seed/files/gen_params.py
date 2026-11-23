@@ -15,6 +15,12 @@ from math import gcd
 SECRETS_PATH = "/opt/rsalab/secrets.json"
 LAB_DIR      = "/home/ubuntu/rsalab"
 
+# Cryptographically secure RNG (reads the OS entropy pool, never blocks on modern Linux)
+_rng = random.SystemRandom()
+
+MIN_PRIME_BITS = 128     # default size of p and q  (n is then 256 bits)
+MAX_KEY_TRIES  = 5000    # safety net: never loop forever
+
 # ─── Primality (Miller-Rabin, 20 rounds — no library dependencies) ──────────
 
 def _is_prime(n, rounds=20):
@@ -25,7 +31,7 @@ def _is_prime(n, rounds=20):
     while d % 2 == 0:
         r += 1; d //= 2
     for _ in range(rounds):
-        a = random.randrange(2, n - 1)
+        a = _rng.randrange(2, n - 1)
         x = pow(a, d, n)
         if x in (1, n - 1): continue
         for _ in range(r - 1):
@@ -37,9 +43,9 @@ def _is_prime(n, rounds=20):
 
 def _gen_prime(bits):
     while True:
-        n = random.getrandbits(bits)
-        n |= (1 << (bits - 1))   # ensure MSB is set (correct bit-length)
-        n |= 1                    # ensure odd
+        n = _rng.getrandbits(bits)
+        n |= (3 << (bits - 2))   # top two bits set: p*q always has exactly 2*bits bits
+        n |= 1                   # ensure odd
         if _is_prime(n):
             return n
 
@@ -54,6 +60,10 @@ def _modinv(a, m):
 def _hex(n):
     """Return uppercase hex string without 0x prefix."""
     return format(n, 'X')
+
+def _fail(msg):
+    print("ERROR: " + msg, file=sys.stderr)
+    sys.exit(1)
 
 # ─── Main ────────────────────────────────────────────────────────────────────
 
@@ -87,27 +97,37 @@ def main():
     # Corrupted: last byte 0x2F → 0x3F  (one bit flip, as in the PDF)
     S5c     = (S5 & ~0xFF) | 0x3F
 
-    # ── Unique RSA-128 key pair per sandbox ──────────────────────────────────
-    # The flag for Task 3 (flag_t3_decrypt) is encoded as the RSA plaintext,
-    # so the student's decrypted ciphertext IS the flag value directly.
-    M3_text = flags["3"]                # e.g. "xK3mP9qR"  (12 printable chars)
-    M3_hex  = M3_text.encode().hex()
-    M3      = int(M3_hex, 16)
+    # ── Unique RSA key pair per sandbox ──────────────────────────────────────
+    # The flag for Task 3 is the RSA plaintext, so the decrypted ciphertext IS
+    # the flag. The plaintext must be smaller than n, so the key size adapts
+    # to the flag length (the old fixed 256-bit n made the loop run forever
+    # as soon as the flag was 32 bytes or longer).
+    M3_text  = flags["3"]
+    M3_bytes = M3_text.encode()
+    M3_hex   = M3_bytes.hex()
+    if not M3_bytes:
+        _fail("flag3 is empty")
+    M3       = int(M3_hex, 16)
 
-    while True:
-        p = _gen_prime(128)
-        q = _gen_prime(128)
+    longest_msg_bytes = max(len(M3_bytes), len(M2_text.encode()), len(M4_text.encode()))
+    # n has 2*bits bits (top two bits set), so we need 2*bits - 1 >= 8*len
+    prime_bits = max(MIN_PRIME_BITS, 4 * longest_msg_bytes + 8)
+
+    for _attempt in range(MAX_KEY_TRIES):
+        p = _gen_prime(prime_bits)
+        q = _gen_prime(prime_bits)
         if p == q: continue
         n   = p * q
         phi = (p - 1) * (q - 1)
         if gcd(E, phi) != 1: continue
         d   = _modinv(E, phi)
         if (E * d) % phi != 1: continue    # sanity check
-        # All messages must be < n (true for 128-bit messages and 256-bit n,
-        # but verify to be safe)
         if any(m >= n for m in (M2, M3, M4)):
             continue
         break
+    else:
+        _fail(f"could not generate a valid RSA key after {MAX_KEY_TRIES} tries "
+              f"(prime_bits={prime_bits}, flag3 length={len(M3_bytes)} bytes)")
 
     # ── Compute answers ──────────────────────────────────────────────────────
     C2 = pow(M2, E, n)   # encrypt "A top secret!"
@@ -201,8 +221,9 @@ def main():
         f.write("  sha256sum /tmp/c0_body.bin\n")
 
     print("RSA parameters generated successfully.")
-    print(f"  Secrets  : {SECRETS_PATH}")
-    print(f"  Params   : {os.path.join(LAB_DIR, 'params.txt')}")
+    print(f"  Prime size : {prime_bits} bits (n = {2 * prime_bits} bits)")
+    print(f"  Secrets    : {SECRETS_PATH}")
+    print(f"  Params     : {os.path.join(LAB_DIR, 'params.txt')}")
 
 if __name__ == "__main__":
     main()
