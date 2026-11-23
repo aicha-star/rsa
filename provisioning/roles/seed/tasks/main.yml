@@ -12,15 +12,32 @@
   apt:
     update_cache: yes
     cache_valid_time: 3600
+  register: apt_update
+  retries: 3
+  delay: 10
+  until: apt_update is succeeded
 
-- name: Install build tools and OpenSSL development headers
+- name: Install build tools, Python and OpenSSL development headers
   apt:
     name:
       - gcc
       - make
       - libssl-dev
       - openssl
+      - python3
+      - haveged        # fournit de l'entropie : évite le blocage de la génération RSA
     state: present
+  register: apt_install
+  retries: 3
+  delay: 10
+  until: apt_install is succeeded
+
+- name: Make sure haveged (entropy daemon) is running
+  service:
+    name: haveged
+    state: started
+    enabled: yes
+  failed_when: false   # ne bloque pas le déploiement si le service n'existe pas
 
 # ── Lab directory structure ──────────────────────────────────────────────────
 - name: Create the lab root directory
@@ -77,9 +94,15 @@
     mode: '0700'
 
 # ── Generate unique RSA parameters ──────────────────────────────────────────
+# Corrections :
+#  - timeout 600 : le script est tué au bout de 10 min au lieu de bloquer
+#  - < /dev/null : le script ne peut pas attendre une saisie clavier
+#  - async/poll  : Ansible ne reste plus figé, il vérifie toutes les 10 s
+#  - creates     : la tâche n'est pas relancée si params.txt existe déjà
 - name: Generate unique RSA parameters for this sandbox
-  command: >
-    python3 {{ rsa_secrets_dir }}/gen_params.py
+  shell: >
+    timeout 600
+    python3 -u {{ rsa_secrets_dir }}/gen_params.py
     --flag0 "{{ flag_t0 }}"
     --flag1 "{{ flag_t1 }}"
     --flag2 "{{ flag_t2 }}"
@@ -87,7 +110,23 @@
     --flag4 "{{ flag_t4 }}"
     --flag5 "{{ flag_t5 }}"
     --flag6 "{{ flag_t6 }}"
+    < /dev/null
+  args:
+    creates: "{{ rsa_lab_dir }}/params.txt"
+  async: 700
+  poll: 10
+  register: gen_params_result
   no_log: true   # prevents flags from appearing in Ansible output
+
+- name: Check that params.txt was really generated
+  stat:
+    path: "{{ rsa_lab_dir }}/params.txt"
+  register: params_file
+
+- name: Fail clearly if RSA parameter generation did not produce params.txt
+  fail:
+    msg: "gen_params.py n'a pas produit params.txt (timeout ou erreur du script)."
+  when: not params_file.stat.exists
 
 - name: Set ownership of params.txt (student-readable)
   file:
@@ -154,10 +193,12 @@
     mode: '0700'
 
 - name: Compute SHA-256 of the Task 6 cert body and store it in secrets.json
-  command: >
+  shell: >
+    timeout 120
     python3 {{ rsa_secrets_dir }}/store_cert_hash.py
     {{ rsa_lab_dir }}/task6/c0.pem
     {{ rsa_secrets_dir }}/secrets.json
+    < /dev/null
 
 # ── Install verifier tool ────────────────────────────────────────────────────
 - name: Install the rsa-verify tool
