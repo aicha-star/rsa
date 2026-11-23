@@ -98,3 +98,4 @@ git push -u origin main
 * **`rsa-verify N` : FAIL sur la valeur hex** : l'étudiant a peut-être inclus des espaces, le préfixe `0x`, ou des guillemets dans `taskN.txt`. Le verifier normalise mais ne peut pas corriger une valeur numériquement fausse.
 * **Task 6 : hash non stocké (TBD)** : la tâche Ansible `Compute SHA-256 of the Task 6 cert body` a échoué (openssl asn1parse absent ou erreur). Vérifier les logs de provisioning.
 * **Licence** : ce scénario est basé sur le SEED Labs RSA Lab (CC BY-NC-SA 4.0) — usage pédagogique non-commercial uniquement.
+# rsa
